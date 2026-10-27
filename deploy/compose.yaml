@@ -27,9 +27,13 @@ services:
       NAPCAT_GID: "1000"
 
     ports:
-      # WebUI 只绑本机：扫码登录走 SSH 隧道，绝不开公网
-      - "127.0.0.1:6099:6099"
-      # OneBot WebSocket，只给同机的 qqbot 容器用
+      # WebUI 要从公网直接访问（手机扫码登录用），靠 WEBUI_TOKEN 保护。
+      # 想改回只允许本机：在 etc/env 里设 NAPCAT_WEBUI_BIND=127.0.0.1 再 restart。
+      - "${NAPCAT_WEBUI_BIND:-0.0.0.0}:6099:6099"
+      # OneBot WebSocket 必须只绑本机，这一条不要改。
+      # 默认 access_token 为空，一旦暴露公网，任何人连上来就能冒充机器人发消息。
+      # qqbot 走 docker 内网 ws://napcat:3001，根本不需要这个映射，
+      # 保留 127.0.0.1 只是为了在宿主机上调试时能连。
       - "127.0.0.1:3001:3001"
 
     volumes:
@@ -83,9 +87,10 @@ services:
       - ./data/qqbot:/opt/qqbot/data
 
     ports:
-      # 面板只绑本机。要对外访问，用同机 nginx/caddy 反代到 127.0.0.1:8080，
-      # 或改成 "0.0.0.0:8080:8080" 自行承担暴露风险。
-      - "${PANEL_BIND:-127.0.0.1}:8080:8080"
+      # 默认绑所有网卡，直接用 http://<服务器IP>:8080 访问，不需要 SSH 隧道。
+      # 安全边界靠面板自己的认证：32 位随机密码 + 5 次失败锁定 + 可选 TOTP。
+      # 想改回只允许本机：在 etc/env 里设 PANEL_BIND=127.0.0.1 再 restart。
+      - "${PANEL_BIND:-0.0.0.0}:8080:8080"
 
     mem_limit: 256m
     mem_reservation: 64m

@@ -2,22 +2,22 @@
 #
 # qqbot 一键安装。
 #
-#   sudo ./install.sh                         源码目录里直接跑
-#   sudo ./install.sh --yes                   不询问，全部用默认值
-#   sudo ./install.sh --panel-bind 0.0.0.0    面板绑所有网卡（自行承担风险）
-#   sudo ./install.sh --dir /srv/qqbot        换安装目录
+#   sudo ./install.sh                        源码目录里直接跑
+#   sudo ./install.sh --yes                  不询问，全部用默认值
+#   sudo ./install.sh --panel-bind 127.0.0.1 面板只允许本机访问
+#   sudo ./install.sh --dir /srv/qqbot       换安装目录
 #
 # 只做三件事：准备 Docker → 生成配置与密钥 → 构建并启动。
-# 域名、证书、反代都不在范围内——那是使用者自己的事，
-# 面板默认只绑 127.0.0.1，要对外就自己反代过来。
+# 装完直接访问 http://<服务器IP>:8080，不需要 SSH 隧道。
+# 域名、证书、反向代理不在本项目范围内。
 set -euo pipefail
 
 DIR="${QQBOT_DIR:-/opt/qqbot}"
-PANEL_BIND="${PANEL_BIND:-127.0.0.1}"
 PANEL_BIND_SET=0
-if [ -n "${PANEL_BIND:-}" ] && [ "${PANEL_BIND}" != "127.0.0.1" ]; then
+if [ -n "${PANEL_BIND:-}" ]; then
   PANEL_BIND_SET=1
 fi
+PANEL_BIND="${PANEL_BIND:-0.0.0.0}"
 ASSUME_YES=0
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
     --yes|-y)      ASSUME_YES=1; shift ;;
     --dir)         DIR="$2"; shift 2 ;;
     --panel-bind)  PANEL_BIND="$2"; PANEL_BIND_SET=1; shift 2 ;;
-    -h|--help)     sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help)     sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)             echo "未知参数: $1" >&2; exit 1 ;;
   esac
 done
@@ -77,6 +77,32 @@ http_ok() {
   else
     return 1
   fi
+}
+
+http_get() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS -m 4 "$url" 2>/dev/null
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -T 4 -O - "$url" 2>/dev/null
+  fi
+}
+
+# 猜这台机器的公网 IP，只用于在安装结束的提示里拼出可点的地址。
+# 云服务器的公网 IP 不挂在网卡上（网卡是 10.x / 172.x 内网地址），
+# 所以只能问外部服务；三个都试，谁先回用谁，全失败就退回网卡地址。
+public_ip() {
+  local ip
+  for u in https://api.ipify.org https://ifconfig.me/ip https://ipinfo.io/ip; do
+    ip=$(http_get "$u" | tr -d '[:space:]')
+    case "$ip" in
+      ""|*[!0-9.]*) continue ;;
+    esac
+    echo "$ip"
+    return 0
+  done
+  ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  echo "${ip:-<服务器IP>}"
 }
 
 # ---------- 预检 ----------
@@ -191,7 +217,8 @@ gen_config() {
   ensure_kv "$env_file" QQBOT_SECRET_KEY   "$(rand_hex 32)"
   ensure_kv "$env_file" WEBUI_TOKEN        "$(rand_hex 16)"
   ensure_kv "$env_file" NAPCAT_TAG         "latest"
-  ensure_kv "$env_file" PANEL_BIND         "127.0.0.1"
+  ensure_kv "$env_file" PANEL_BIND         "0.0.0.0"
+  ensure_kv "$env_file" NAPCAT_WEBUI_BIND  "0.0.0.0"
   ensure_kv "$env_file" GOPROXY            "https://goproxy.cn,direct"
   ensure_kv "$env_file" QQBOT_VERSION      "$(date +%Y%m%d-%H%M)"
 
@@ -286,51 +313,71 @@ build_and_up() {
 # ---------- 收尾 ----------
 print_next() {
   local env_file="$DIR/etc/env"
-  local webui_token panel_bind pw
+  local webui_token panel_bind pw ip
 
   webui_token=$(env_get WEBUI_TOKEN)
   panel_bind=$(env_get PANEL_BIND)
-  [ -n "$panel_bind" ] || panel_bind="127.0.0.1"
+  [ -n "$panel_bind" ] || panel_bind="0.0.0.0"
 
   pw=$(cd "$DIR" && docker compose --env-file "$env_file" logs qqbot 2>/dev/null \
         | grep -A3 '面板初始凭据' | grep '密码' | head -1 | sed 's/.*: *//' || true)
 
-  local panel_addr
+  ip=$(public_ip)
+
+  local panel_url webui_url
   case "$panel_bind" in
-    127.0.0.1) panel_addr="http://127.0.0.1:8080（仅本机，走 SSH 隧道）" ;;
-    0.0.0.0)   panel_addr="http://<服务器IP>:8080（已对外暴露）" ;;
-    *)         panel_addr="http://${panel_bind}:8080" ;;
+    127.0.0.1)
+      panel_url="http://127.0.0.1:8080（仅本机）"
+      webui_url="http://127.0.0.1:6099/webui（仅本机）"
+      ;;
+    0.0.0.0)
+      panel_url="http://${ip}:8080"
+      webui_url="http://${ip}:6099/webui"
+      ;;
+    *)
+      panel_url="http://${panel_bind}:8080"
+      webui_url="http://${ip}:6099/webui"
+      ;;
   esac
 
   cat <<EOF
 
 ${C_OK}========== 安装完成 ==========${C_END}
 
-安装目录   $DIR
-面板地址   $panel_addr
-$( [ -n "$pw" ] && echo "面板账号   admin / ${pw}" || echo "面板密码   见 qqbot logs（只在首次启动打印一次）" )
+安装目录     $DIR
+面板地址     $panel_url
+面板账号     admin / ${pw:-见 qqbot logs}
+NapCat WebUI $webui_url
+WebUI Token  ${webui_token}
 
-${C_WARN}下一步（必须做，否则机器人不会上线）${C_END}
+${C_WARN}打不开就先查安全组${C_END}
+云服务器的安全组 / 防火墙默认是关着的，要放行两个 TCP 端口：
+   8080   面板
+   6099   NapCat WebUI（扫码用）
+Debian/Ubuntu 装了 ufw 的话：ufw allow 8080/tcp && ufw allow 6099/tcp
 
-1) 从你的电脑建 SSH 隧道（两个端口一起转发）：
-     ssh -L 6099:127.0.0.1:6099 -L 8080:127.0.0.1:8080 root@<服务器IP>
+${C_OK}下一步${C_END}
 
-2) 浏览器打开 http://127.0.0.1:6099/webui 扫码登录 QQ
-   WebUI Token：${webui_token}
+1) 打开 $webui_url
+   Token 填上面的值，用要当机器人的 QQ 扫码
 
-3) 确认 NapCat 的 WebSocket 服务端是开启的：
-     「网络配置」里应有一条 WebSocket 服务端，端口 3001
-     Token 留空（本项目的默认配置就是空 Token，填了反而连不上）
+2) 扫码成功后 qqbot 会在 5 秒内自动连上，验证：
+     qqbot logs -f          看到「已登录」即成功
 
-4) 扫码成功后，qqbot 会在 5 秒内自动连上并拉取账号信息。
-   验证：qqbot logs -f        看到「已登录」即成功
+3) 打开 $panel_url 登录面板
+   在「设置」里填 DeepSeek API Key，然后去群里 @ 一下试试
+
+${C_WARN}安全提醒（面板现在公网可达）${C_END}
+- 面板是 HTTP，密码在网络上是明文传输的。介意的话自己挂一层 HTTPS 反代。
+- 登录后建议立刻在「账号」页开启 TOTP 二次验证。
+- OneBot 的 3001 端口仍然只绑 127.0.0.1，这是刻意保留的：
+  它默认没有 Token，一旦暴露公网，任何人连上来就能冒充你的机器人发消息。
 
 ${C_DIM}常用命令（已安装到 /usr/local/bin/qqbot）${C_END}
    qqbot status      容器与面板状态、资源占用
    qqbot logs -f     跟踪日志
    qqbot restart     重启
    qqbot backup      备份数据与密钥
-   qqbot tunnel      再打印一次隧道命令
    qqbot uninstall   卸载（默认保留数据）
 
 EOF

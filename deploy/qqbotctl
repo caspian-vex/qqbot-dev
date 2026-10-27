@@ -39,12 +39,39 @@ http_ok() {
   fi
 }
 
+# 最小化 Debian 上可能既没有 curl 也没有 wget
+http_get() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS -m 4 "$url" 2>/dev/null
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -T 4 -O - "$url" 2>/dev/null
+  fi
+}
+
+# 云服务器的公网 IP 不挂在网卡上，只能问外部服务；全失败就退回网卡地址
+public_ip() {
+  local ip
+  for u in https://api.ipify.org https://ifconfig.me/ip https://ipinfo.io/ip; do
+    ip=$(http_get "$u" | tr -d '[:space:]')
+    case "$ip" in
+      ""|*[!0-9.]*) continue ;;
+    esac
+    echo "$ip"
+    return 0
+  done
+  ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  echo "${ip:-<服务器IP>}"
+}
+
 panel_url() {
-  local bind
+  local bind ip
   bind=$(env_get PANEL_BIND)
-  case "${bind:-127.0.0.1}" in
-    0.0.0.0) echo "http://<本机IP>:8080" ;;
-    *)       echo "http://127.0.0.1:8080" ;;
+  ip=$(public_ip)
+  case "${bind:-0.0.0.0}" in
+    127.0.0.1) echo "http://127.0.0.1:8080" ;;
+    0.0.0.0)   echo "http://${ip}:8080" ;;
+    *)         echo "http://${bind}:8080" ;;
   esac
 }
 
@@ -218,19 +245,37 @@ cmd_restore() {
   echo "已从 $src 恢复"
 }
 
+# 打印访问地址。默认是公网 IP 直连，不需要隧道。
+cmd_url() {
+  local ip
+  ip=$(public_ip)
+  cat <<EOF
+面板      $(panel_url)
+         账号 admin（密码见安装结束时的输出）
+
+NapCat    http://${ip}:6099/webui
+         Token $(env_get WEBUI_TOKEN)
+
+OneBot    ws://127.0.0.1:3001（只绑本机，不对外）
+EOF
+}
+
+# 隧道是备用手段：面板被改回只绑 127.0.0.1 时用它。
 cmd_tunnel() {
   local ip
-  ip=$(hostname -I 2>/dev/null | awk '{print $1}')
+  ip=$(public_ip)
   cat <<EOF
-在你自己的电脑上执行（把 IP 换成服务器地址）：
+如果面板只绑了 127.0.0.1，在你自己的电脑上建隧道：
 
-  ssh -L 6099:127.0.0.1:6099 -L 8080:127.0.0.1:8080 root@${ip:-<服务器IP>}
+  ssh -L 6099:127.0.0.1:6099 -L 8080:127.0.0.1:8080 root@${ip}
 
-然后浏览器打开：
+然后打开：
   NapCat WebUI   http://127.0.0.1:6099/webui
   qqbot 面板      http://127.0.0.1:8080
 
 WebUI Token: $(env_get WEBUI_TOKEN)
+
+当前 PANEL_BIND = $(env_get PANEL_BIND)
 EOF
 }
 
@@ -253,6 +298,7 @@ usage() {
 qqbot — 运维命令
 
   status                  容器与面板状态、资源占用
+  url                     打印面板与 WebUI 的访问地址
   logs [-f] [服务]        查看日志（服务：qqbot / napcat）
   up / down               启动 / 停止
   restart                 重启
@@ -260,7 +306,7 @@ qqbot — 运维命令
   rollback <版本>         回滚到指定镜像版本
   backup                  备份数据与密钥（先停容器，保证一致性）
   restore <文件>          从备份恢复
-  tunnel                  打印 SSH 隧道命令（扫码与面板访问）
+  tunnel                  面板被改成只绑 127.0.0.1 时的备用访问方式
   uninstall [--purge]     卸载（--purge 同时删数据）
 
 安装目录 $DIR
@@ -269,6 +315,7 @@ EOF
 
 case "${1:-}" in
   status)    shift; cmd_status "$@" ;;
+  url)       shift; cmd_url "$@" ;;
   logs)      shift; cmd_logs "$@" ;;
   up)        shift; dc up -d ;;
   down)      shift; dc down ;;

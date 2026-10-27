@@ -40,26 +40,32 @@ git clone <本仓库> qqbot-dev && cd qqbot-dev && sudo ./install.sh
 4. 构建镜像、启动容器、等面板健康
 5. 把 `qqbot` 运维命令装到 `/usr/local/bin`
 
-装完会打印面板初始密码、NapCat WebUI Token，以及下一步要做什么。
+装完会打印面板地址、初始密码、NapCat WebUI Token，以及下一步要做什么。
 
 **非交互安装**：`sudo ./install.sh --yes`
 
-**面板对外暴露**：`sudo ./install.sh --panel-bind 0.0.0.0`
-（默认只绑 127.0.0.1，对外请自己反代，见 ADR-010）
+**只允许本机访问**：`sudo ./install.sh --panel-bind 127.0.0.1`
 
 ### 装完之后必须做的两件事
 
-```bash
-# 1) 从你自己的电脑建隧道
-ssh -L 6099:127.0.0.1:6099 -L 8080:127.0.0.1:8080 root@<服务器IP>
+**先放行端口**。云服务器的安全组默认是关的，不放行就是「装完打不开」：
 
-# 2) 浏览器打开 NapCat WebUI 扫码登录 QQ
-#    http://127.0.0.1:6099/webui   （Token 安装结束时打印过，也可 qqbot tunnel 再看）
+```
+8080   面板
+6099   NapCat WebUI（扫码用）
 ```
 
-扫码成功后 qqbot 会在 5 秒内自动连上，`qqbot logs -f` 能看到「已登录」。
+然后：
 
-然后打开面板 `http://127.0.0.1:8080`，在「设置」里填 DeepSeek 的 API Key，就能对话了。
+1. 打开 `http://<服务器IP>:6099/webui`，Token 用安装结束打印的那个，扫码登录 QQ
+2. 打开 `http://<服务器IP>:8080`，`admin` + 安装时打印的密码登录，在「设置」里填 DeepSeek 的 API Key
+
+扫码成功后 qqbot 会在 5 秒内自动连上，`qqbot logs -f` 能看到「已登录」。
+随时用 `qqbot url` 找回这些地址。
+
+> **注意**：面板走 HTTP，密码是明文传输。介意就自己挂一层 HTTPS 反代。
+> 登录后建议在「账号」页开启 TOTP。
+> OneBot 的 3001 端口始终只绑 `127.0.0.1`——它默认没有 Token，不能暴露公网。
 
 ---
 
@@ -67,13 +73,14 @@ ssh -L 6099:127.0.0.1:6099 -L 8080:127.0.0.1:8080 root@<服务器IP>
 
 ```
 qqbot status                  容器与面板状态、资源占用
+qqbot url                     面板与 WebUI 的访问地址
 qqbot logs -f                 跟踪日志（qqbot logs napcat 看协议端）
 qqbot restart                 重启
 qqbot upgrade [--src <目录>]  重建镜像并切过去，失败自动回滚
 qqbot rollback <版本>         回滚到指定镜像版本
 qqbot backup                  备份数据与密钥（先停容器保证一致性，只留最近 7 份）
 qqbot restore <文件>          从备份恢复
-qqbot tunnel                  再打印一次隧道命令
+qqbot tunnel                  面板被改回只绑 127.0.0.1 时的备用访问方式
 qqbot uninstall [--purge]     卸载（--purge 同时删数据）
 ```
 
