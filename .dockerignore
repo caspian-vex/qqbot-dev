@@ -1,0 +1,26 @@
+# 构建上下文排除项。
+#
+# 路径一律写成 / 开头的绝对形式。
+# 原因：不带斜杠的模式（如 `dist`）会匹配任意层级的同名目录，
+# 把 web/dist 一起排掉——而它是前端源码，被 embed 进二进制，
+# 排掉后编译直接报 `pattern all:dist: no matching files found`。
+#
+# .devroot 里可能有 SSH 私钥和数据库，绝不能进镜像。
+
+.git
+.gitignore
+.devroot
+
+/bin
+/dist
+/docs
+/scripts
+
+*.exe
+*.db
+*.db-shm
+*.db-wal
+
+/服务器信息.txt
+/开发任务书.txt
+/README.md

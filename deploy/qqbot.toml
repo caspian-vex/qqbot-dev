@@ -1,0 +1,33 @@
+# qqbot 引导配置（容器内路径）
+#
+# 这份文件由 install.sh 生成到 /opt/qqbot/etc/qqbot.toml，
+# 只读挂载进容器。改完需要 `qqbot restart` 生效。
+#
+# 分工：
+#   - 这里只放「部署期确定」的项：路径、监听地址、协议端地址
+#   - LLM、人格、触发规则这些高频调整的项在 SQLite 里，由面板改，改完立即生效
+# 分开的原因：面板若也写 TOML，人工加的注释会被冲掉，且并发写有竞态。
+
+data_dir = "/opt/qqbot/data"
+
+[log]
+# debug / info / warn / error
+level = "info"
+# text 更好读；要接日志采集再换 json
+format = "text"
+
+[onebot]
+# 容器网络内用服务名寻址，NapCat 的正向 WebSocket 监听 3001
+url = "ws://napcat:3001"
+# 默认留空。NapCat 在 MODE=ws 首次初始化时不会生成 token，
+# 这里填了值反而会导致连不上（握手 401）。
+# 3001 只绑 127.0.0.1，外部拿不到，留空是可接受的默认姿态。
+# 要加固：先在 NapCat WebUI 的网络配置里设好 Token，
+# 再把同一个值填到这里（或在 /opt/qqbot/etc/env 加 QQBOT_ONEBOT_TOKEN=xxx），然后重启。
+access_token = ""
+
+[panel]
+# 容器内必须监听 0.0.0.0，否则端口映射进不来。
+# 对外的安全边界由 compose 的端口绑定（默认 127.0.0.1:8080）保证，
+# 不靠这里限制。
+listen = "0.0.0.0:8080"

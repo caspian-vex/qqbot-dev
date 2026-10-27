@@ -13,10 +13,19 @@ venv/
 .env.*
 *.key
 *.pem
+*.crt
+etc/secrets.env
+
+# 运行期数据
+/data/
+/backup/
+/logs/
+*.db
+*.db-shm
+*.db-wal
 
 # 日志与临时文件
 *.log
-logs/
 .DS_Store
 Thumbs.db
 .workbuddy-ai/
@@ -27,5 +36,14 @@ Thumbs.db
 *.swp
 
 # 构建产物
-dist/
-build/
+#
+# 路径一律写 / 开头的绝对形式。原因：不带斜杠的 `dist/` 会匹配任意层级的同名目录，
+# 把 web/dist 一起排掉——而 web/dist 是前端源码（手写原生 JS，无构建步骤），
+# 通过 //go:embed 打进二进制。被忽略会导致 clone 下来的代码编译失败，
+# 报错 `pattern all:dist: no matching files found`。
+# 这个坑已经踩过一次（当时只是删掉了显式的 web/dist 行，没意识到 dist/ 也会命中），
+# 所以这里统一改成绝对路径，别再留模糊规则。
+/dist/
+/build/
+/bin/
+/.devroot/

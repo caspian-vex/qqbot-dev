@@ -1,0 +1,108 @@
+# qqbot 部署编排：NapCat（协议端）+ qqbot（自研框架与面板）
+#
+# 设计约束（1 核 2G，不可升配）：
+#   - 两个容器总内存上限 1.25G，给系统和 1Panel 留出余量
+#   - 日志用服务级轮转，**不改 /etc/docker/daemon.json**
+#     （daemon.json 是全局的，1Panel 会重写；服务级配置零冲突）
+#   - 所有端口只绑 127.0.0.1，公网入口由使用者自己反代
+#
+# 用法：docker compose --env-file .env up -d
+
+name: qqbot
+
+services:
+  # ---------------- 协议端 ----------------
+  napcat:
+    image: mlikiowa/napcat-docker:${NAPCAT_TAG:-latest}
+    container_name: qqbot-napcat
+    restart: unless-stopped
+
+    environment:
+      # ws = 正向 WebSocket，NapCat 监听 3001，qqbot 作为客户端连上去
+      MODE: ws
+      WEBUI_TOKEN: ${WEBUI_TOKEN:?缺少 WEBUI_TOKEN，请先运行 install.sh}
+      # 1000 是官方 README 的默认值。install.sh 会把 data/napcat 下的目录
+      # chown 到 1000:1000，两者必须一致，否则 NapCat 写不进 QQ 配置。
+      NAPCAT_UID: "1000"
+      NAPCAT_GID: "1000"
+
+    ports:
+      # WebUI 只绑本机：扫码登录走 SSH 隧道，绝不开公网
+      - "127.0.0.1:6099:6099"
+      # OneBot WebSocket，只给同机的 qqbot 容器用
+      - "127.0.0.1:3001:3001"
+
+    volumes:
+      - ./data/napcat/qq:/app/.config/QQ
+      - ./data/napcat/config:/app/napcat/config
+      - ./data/napcat/plugins:/app/napcat/plugins
+      - ./data/napcat/logs:/app/napcat/logs
+
+    # QQNT 底层是 Chromium，默认 64MB 的 /dev/shm 会导致渲染进程随机崩溃。
+    # 给 256MB 是折中：够用，且在 2G 机器上不会把内存吃光（shm 走 tmpfs，算内存）。
+    shm_size: 256m
+
+    mem_limit: 1024m
+    mem_reservation: 512m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    labels:
+      com.qqbot.managed: "true"
+      com.qqbot.role: "protocol"
+
+  # ---------------- 框架与面板 ----------------
+  qqbot:
+    build:
+      # 安装目录布局：compose.yaml 在根，源码在 src/
+      context: ./src
+      args:
+        VERSION: ${QQBOT_VERSION:-dev}
+        COMMIT: ${QQBOT_COMMIT:-none}
+        BUILD_DATE: ${QQBOT_BUILD_DATE:-unknown}
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+    image: qqbot:${QQBOT_VERSION:-dev}
+    container_name: qqbot-core
+    restart: unless-stopped
+
+    depends_on:
+      - napcat
+
+    # 密钥走 env_file 而不是挂文件：容器内是非 root，
+    # 读不了宿主上 0600 root 所有的密钥文件，注入环境变量最省事。
+    env_file:
+      - ./etc/env
+
+    volumes:
+      # 引导配置只读挂载，改完 restart 生效
+      - ./etc/qqbot.toml:/opt/qqbot/etc/qqbot.toml:ro
+      - ./data/qqbot:/opt/qqbot/data
+
+    ports:
+      # 面板只绑本机。要对外访问，用同机 nginx/caddy 反代到 127.0.0.1:8080，
+      # 或改成 "0.0.0.0:8080:8080" 自行承担暴露风险。
+      - "${PANEL_BIND:-127.0.0.1}:8080:8080"
+
+    mem_limit: 256m
+    mem_reservation: 64m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    labels:
+      com.qqbot.managed: "true"
+      com.qqbot.role: "core"

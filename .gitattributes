@@ -1,0 +1,9 @@
+# 换行符统一为 LF：仓库里存 LF，checkout 出来也是 LF，不随平台变化。
+#
+# 为什么必须钉死而不是靠各人的本地配置：
+# 开发机是 Windows（core.autocrlf=true，checkout 时会转成 CRLF），
+# 部署目标是 Linux。shell 脚本一旦带上 CRLF，`bash install.sh`
+# 会直接报 `bad interpreter: /usr/bin/env bash^M`。
+# 更麻烦的是这个错误在本地用 Git Bash 跑是发现不了的（它容忍 CRLF），
+# 只会在新服务器上炸。所以用 .gitattributes 保证，不依赖环境。
+* text=auto eol=lf
