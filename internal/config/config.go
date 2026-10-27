@@ -23,6 +23,10 @@ import (
 // defaultRoot 是默认安装根目录。本地开发可用 QQBOT_ROOT 覆盖。
 const defaultRoot = "/opt/qqbot"
 
+// defaultPanelListen 是面板的默认监听地址（本机开发用）。
+// 容器里会被 QQBOT_PANEL_LISTEN 覆盖成 0.0.0.0:<端口>。
+const defaultPanelListen = "127.0.0.1:5333"
+
 // Config 是引导配置。
 type Config struct {
 	Root    string       `toml:"-"`
@@ -63,9 +67,22 @@ func Default() *Config {
 			URL: "ws://127.0.0.1:3001",
 		},
 		Panel: PanelConfig{
-			Listen: "127.0.0.1:8080",
+			Listen: panelListen(),
 		},
 	}
+}
+
+// panelListen 返回面板监听地址：环境变量优先，其次默认值。
+//
+// 为什么要有环境变量这一层：
+// 容器里的监听端口由 compose 的 PANEL_PORT 决定，而 qqbot.toml 是以只读方式
+// 挂载进去的（0600 root）。改一个端口不应该要求用户去改那份文件、再重启容器——
+// 在 etc/env 里改 PANEL_PORT 就够了。
+func panelListen() string {
+	if v := strings.TrimSpace(os.Getenv("QQBOT_PANEL_LISTEN")); v != "" {
+		return v
+	}
+	return defaultPanelListen
 }
 
 // Root 返回安装根目录，优先取 QQBOT_ROOT 环境变量。
@@ -122,8 +139,14 @@ func (c *Config) normalize() error {
 	if c.OneBot.URL == "" {
 		return errors.New("onebot.url 不能为空")
 	}
+	// 优先级：环境变量 > TOML > 默认值。
+	// 环境变量压过 TOML 是刻意的——否则老安装里那份写着 8080 的 qqbot.toml
+	// 会让 compose 映射到的新端口连不上，而且症状是「容器 healthy 但打不开」。
+	if v := strings.TrimSpace(os.Getenv("QQBOT_PANEL_LISTEN")); v != "" {
+		c.Panel.Listen = v
+	}
 	if c.Panel.Listen == "" {
-		c.Panel.Listen = "127.0.0.1:8080"
+		c.Panel.Listen = defaultPanelListen
 	}
 	return nil
 }

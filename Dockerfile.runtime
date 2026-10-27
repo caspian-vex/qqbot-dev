@@ -42,7 +42,7 @@ ENV TZ=Asia/Shanghai \
 WORKDIR /opt/qqbot
 USER qqbot
 
-EXPOSE 8080
+EXPOSE 5333
 
 # 容器只跑前台，生命周期交给 compose 管；
 # 健康检查在 compose.yaml 里（用 busybox 自带的 wget）。

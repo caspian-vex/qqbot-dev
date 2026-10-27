@@ -82,7 +82,7 @@ sudo ./install.sh --dir /srv/qqbot         # 换安装目录
 sudo ./install.sh --from-source            # 跳过下载，强制在服务器上编译
 ```
 
-> 默认面板绑 `0.0.0.0`，装完直接访问 `http://<服务器IP>:8080`，不需要 SSH 隧道。
+> 默认面板绑 `0.0.0.0`，装完直接访问 `http://<服务器IP>:5333`，不需要 SSH 隧道。
 > 想只允许本机就加 `--panel-bind 127.0.0.1`。
 
 **下载慢 / 下不动**（GitHub 在国内不稳定）：把下载地址指向镜像站
@@ -102,23 +102,26 @@ sudo QQBOT_BINARY_BASE=https://mirror.example.com/qqbot ./install.sh
 
 | 端口 | 用途 | 是否必须 |
 | --- | --- | --- |
-| 8080 | 面板 | 是 |
+| 5333 | 面板 | 是 |
 | 6099 | NapCat WebUI（扫码用） | 是 |
 | 3001 | OneBot WS | **不要放行** |
 
 在云厂商控制台加两条 TCP 入站规则；机器上装了 ufw 的话：
 
 ```bash
-ufw allow 8080/tcp && ufw allow 6099/tcp
+ufw allow 5333/tcp && ufw allow 6099/tcp
 ```
 
 > 3001 不能放行。它默认没有 Token，一旦公网可达，任何人连上来就能冒充机器人发消息。
 > 这个端口写死绑 `127.0.0.1`，不要改。
 
+> 想换面板端口（比如 5333 被别的服务占了）：改 `/opt/qqbot/etc/env` 里的
+> `PANEL_PORT`，然后 `qqbot restart`。容器内外会一起变，不用改别的地方。
+
 然后：
 
 1. 打开 `http://<服务器IP>:6099/webui`，Token 用安装结束打印的那个，扫码登录 QQ
-2. 打开 `http://<服务器IP>:8080`，`admin` + 安装时打印的密码登录，在「设置」里填 DeepSeek 的 API Key
+2. 打开 `http://<服务器IP>:5333`，`admin` + 安装时打印的密码登录，在「设置」里填 DeepSeek 的 API Key
 
 扫码成功后 qqbot 会在 5 秒内自动连上，`qqbot logs -f` 能看到「已登录」。
 随时用 `qqbot url` 找回这些地址。
@@ -245,13 +248,13 @@ qqbot logs -f         # 看到「已登录」
 按这个顺序查，多数情况是第一条：
 
 ```bash
-curl -s localhost:8080/healthz     # 服务端自己通不通
+curl -s localhost:5333/healthz     # 服务端自己通不通
 ```
 
-- 本机通、外面不通 → **安全组 / 防火墙没放行 8080**
+- 本机通、外面不通 → **安全组 / 防火墙没放行 5333**
 - 本机也不通 → `qqbot logs qqbot` 看退出原因
-- 容器活着但端口没监听 → `docker ps` 看 PORTS 列，应该是 `0.0.0.0:8080->8080/tcp`，
-  而不是 `127.0.0.1:8080`
+- 容器活着但端口没监听 → `docker ps` 看 PORTS 列，应该是 `0.0.0.0:5333->5333/tcp`，
+  而不是 `127.0.0.1:5333`
 
 改绑定地址（两种都只改 `etc/env` 并重建容器，数据不动）：
 

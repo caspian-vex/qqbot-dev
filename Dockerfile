@@ -62,7 +62,7 @@ ENV TZ=Asia/Shanghai \
 WORKDIR /opt/qqbot
 USER qqbot
 
-EXPOSE 8080
+EXPOSE 5333
 
 # 容器只跑前台，生命周期交给 compose 管；
 # 不要在这里加健康检查脚本——镜像里没有 curl，用 compose 的 healthcheck 走 wget。

@@ -26,6 +26,17 @@ env_set() {
   fi
 }
 
+# 面板端口。容器内外是同一个值（compose 的 ports 与 QQBOT_PANEL_LISTEN 都从它推导），
+# 所以宿主机上的健康检查直接用这个端口。
+panel_port() {
+  local p
+  p=$(env_get PANEL_PORT)
+  case "$p" in
+    ''|*[!0-9]*) echo 5333 ;;
+    *)           echo "$p" ;;
+  esac
+}
+
 # 最小化 Debian 上可能既没有 curl 也没有 wget
 http_ok() {
   local url="$1"
@@ -65,22 +76,24 @@ public_ip() {
 }
 
 panel_url() {
-  local bind ip
+  local bind ip port
   bind=$(env_get PANEL_BIND)
+  port=$(panel_port)
   ip=$(public_ip)
   case "${bind:-0.0.0.0}" in
-    127.0.0.1) echo "http://127.0.0.1:8080" ;;
-    0.0.0.0)   echo "http://${ip}:8080" ;;
-    *)         echo "http://${bind}:8080" ;;
+    127.0.0.1) echo "http://127.0.0.1:${port}" ;;
+    0.0.0.0)   echo "http://${ip}:${port}" ;;
+    *)         echo "http://${bind}:${port}" ;;
   esac
 }
 
 # 等面板就绪，同时容忍容器已经退出的情况（早失败比傻等有用）
 wait_ready() {
-  local secs="${1:-90}" i running
+  local secs="${1:-90}" i running port
+  port=$(panel_port)
   echo -n "等待面板就绪"
   for i in $(seq 1 "$((secs / 2))"); do
-    if http_ok "http://127.0.0.1:8080/healthz"; then
+    if http_ok "http://127.0.0.1:${port}/healthz"; then
       echo; return 0
     fi
     running=$(docker inspect -f '{{.State.Running}}' qqbot-core 2>/dev/null || echo false)
@@ -101,7 +114,7 @@ cmd_status() {
   dc ps
   echo
   echo "=== 面板 ==="
-  if http_ok "http://127.0.0.1:8080/healthz"; then
+  if http_ok "http://127.0.0.1:$(panel_port)/healthz"; then
     echo "健康  $(panel_url)"
   else
     echo "不可达（可能仍在启动，或容器已退出）—— 看 qqbot logs"
@@ -316,16 +329,17 @@ EOF
 
 # 隧道是备用手段：面板被改回只绑 127.0.0.1 时用它。
 cmd_tunnel() {
-  local ip
+  local ip port
   ip=$(public_ip)
+  port=$(panel_port)
   cat <<EOF
 如果面板只绑了 127.0.0.1，在你自己的电脑上建隧道：
 
-  ssh -L 6099:127.0.0.1:6099 -L 8080:127.0.0.1:8080 root@${ip}
+  ssh -L 6099:127.0.0.1:6099 -L ${port}:127.0.0.1:${port} root@${ip}
 
 然后打开：
   NapCat WebUI   http://127.0.0.1:6099/webui
-  qqbot 面板      http://127.0.0.1:8080
+  qqbot 面板      http://127.0.0.1:${port}
 
 WebUI Token: $(env_get WEBUI_TOKEN)
 

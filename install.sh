@@ -9,7 +9,7 @@
 #   sudo ./install.sh --from-source          跳过下载，强制在服务器上构建
 #
 # 只做三件事：准备 Docker → 生成配置与密钥 → 构建并启动。
-# 装完直接访问 http://<服务器IP>:8080，不需要 SSH 隧道。
+# 装完直接访问 http://<服务器IP>:5333，不需要 SSH 隧道。
 # 域名、证书、反向代理不在本项目范围内。
 set -euo pipefail
 
@@ -295,6 +295,17 @@ rand_hex() {
 
 env_get() { grep "^$1=" "$DIR/etc/env" 2>/dev/null | cut -d= -f2- || true; }
 
+# 面板端口。只认 etc/env 里的 PANEL_PORT，容器内外用的是同一个值
+# （compose 的 ports 与 QQBOT_PANEL_LISTEN 都从它推导）。
+panel_port() {
+  local p
+  p=$(env_get PANEL_PORT)
+  case "$p" in
+    ''|*[!0-9]*) echo 5333 ;;
+    *)           echo "$p" ;;
+  esac
+}
+
 # 幂等写入：文件已有该键就保留原值，避免重装时把正在用的密钥换掉。
 ensure_kv() {
   local file="$1" key="$2" value="$3"
@@ -333,6 +344,8 @@ gen_config() {
   ensure_kv "$env_file" WEBUI_TOKEN        "$(rand_hex 16)"
   ensure_kv "$env_file" NAPCAT_TAG         "latest"
   ensure_kv "$env_file" PANEL_BIND         "0.0.0.0"
+  # 面板端口。容器内外用同一个值：compose 的 ports 与 QQBOT_PANEL_LISTEN 都从它推导。
+  ensure_kv "$env_file" PANEL_PORT         "5333"
   ensure_kv "$env_file" NAPCAT_WEBUI_BIND  "0.0.0.0"
   ensure_kv "$env_file" GOPROXY            "https://goproxy.cn,direct"
   ensure_kv "$env_file" QQBOT_VERSION      "$(date +%Y%m%d-%H%M)"
@@ -412,9 +425,10 @@ build_and_up() {
   docker compose --env-file "$env_file" up -d
 
   echo -n "等待面板就绪"
-  local i running
+  local i running port
+  port=$(panel_port)
   for i in $(seq 1 60); do
-    if http_ok "http://127.0.0.1:8080/healthz"; then
+    if http_ok "http://127.0.0.1:${port}/healthz"; then
       echo; ok "面板已就绪"; return 0
     fi
     # 容器已经退出就别再等了，直接把原因打出来
@@ -435,11 +449,12 @@ build_and_up() {
 # ---------- 收尾 ----------
 print_next() {
   local env_file="$DIR/etc/env"
-  local webui_token panel_bind pw ip build_mode build_label
+  local webui_token panel_bind pw ip build_mode build_label port
 
   webui_token=$(env_get WEBUI_TOKEN)
   panel_bind=$(env_get PANEL_BIND)
   [ -n "$panel_bind" ] || panel_bind="0.0.0.0"
+  port=$(panel_port)
 
   build_mode=$(env_get QQBOT_BUILD_MODE)
   case "$build_mode" in
@@ -455,15 +470,15 @@ print_next() {
   local panel_url webui_url
   case "$panel_bind" in
     127.0.0.1)
-      panel_url="http://127.0.0.1:8080（仅本机）"
+      panel_url="http://127.0.0.1:${port}（仅本机）"
       webui_url="http://127.0.0.1:6099/webui（仅本机）"
       ;;
     0.0.0.0)
-      panel_url="http://${ip}:8080"
+      panel_url="http://${ip}:${port}"
       webui_url="http://${ip}:6099/webui"
       ;;
     *)
-      panel_url="http://${panel_bind}:8080"
+      panel_url="http://${panel_bind}:${port}"
       webui_url="http://${ip}:6099/webui"
       ;;
   esac
@@ -481,9 +496,9 @@ WebUI Token  ${webui_token}
 
 ${C_WARN}打不开就先查安全组${C_END}
 云服务器的安全组 / 防火墙默认是关着的，要放行两个 TCP 端口：
-   8080   面板
+   ${port}   面板
    6099   NapCat WebUI（扫码用）
-Debian/Ubuntu 装了 ufw 的话：ufw allow 8080/tcp && ufw allow 6099/tcp
+Debian/Ubuntu 装了 ufw 的话：ufw allow ${port}/tcp && ufw allow 6099/tcp
 
 ${C_OK}下一步${C_END}
 
