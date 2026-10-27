@@ -1,0 +1,31 @@
+# 敏感信息（服务器 IP / 账号 / 密码）绝不能提交
+服务器信息.txt
+
+# 依赖
+node_modules/
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 环境变量与密钥
+.env
+.env.*
+*.key
+*.pem
+
+# 日志与临时文件
+*.log
+logs/
+.DS_Store
+Thumbs.db
+.workbuddy-ai/
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+
+# 构建产物
+dist/
+build/
