@@ -33,7 +33,7 @@ QQ ←→ NapCat（协议端） ←WebSocket→ qqbot（判断 + 调模型 + 回
 | 磁盘 | ≥ 8 GB 可用 | `df -h /` |
 | 系统 | Debian 12+ / Ubuntu 22.04+（能跑 `get.docker.com`） | `cat /etc/os-release` |
 | 权限 | root | `id -u` 输出 0 |
-| 网络 | 能访问 github.com、docker hub、api.deepseek.com | — |
+| 网络 | 能访问 raw.githubusercontent.com、github.com、docker hub、api.deepseek.com | — |
 
 内存不足 1.8G 时安装脚本会警告并询问是否继续。低于 1.5G 基本不要试，
 构建镜像阶段会被 OOM 杀掉。
@@ -49,13 +49,28 @@ echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
 ## 安装
 
-一条命令。先装 git（最小化 Debian/Ubuntu 没带），然后拉代码、跑安装脚本：
+**一条命令**（装 git → clone → 安装，全程自动）：
+
+```bash
+curl -fsSL -o /tmp/qqbot-boot.sh https://raw.githubusercontent.com/caspian-vex/qqbot-dev/main/bootstrap.sh && sudo bash /tmp/qqbot-boot.sh
+```
+
+它会自动识别发行版装 git、把代码拉到 `/root/qqbot-dev`、然后交给 `install.sh`。
+重跑同一条命令就是升级（已 clone 过会走 `git pull`，不会重新拉一遍）。
+
+<details>
+<summary>想自己控制每一步，就手动跑</summary>
 
 ```bash
 apt-get update && apt-get install -y git
 git clone https://github.com/caspian-vex/qqbot-dev.git
 cd qqbot-dev && sudo ./install.sh
 ```
+
+</details>
+
+> 为什么不是 `curl ... | sudo bash`：管道形式在下载失败时会让 bash 读到空脚本、
+> 静默退出 0，你会以为装完了其实什么都没发生。先落盘再执行，失败就短路报错。
 
 安装脚本会依次做：
 
@@ -73,14 +88,24 @@ cd qqbot-dev && sudo ./install.sh
 而 CI 已经用同样的参数把二进制编好了，下载只要几秒。两条路径的产物等价，
 装完会打印 `镜像来源` 告诉你是哪条。
 
-常用变体：
+常用变体（参数直接加在 bootstrap 后面，会原样传给 `install.sh`）：
 
 ```bash
-sudo ./install.sh --yes                    # 全程不询问
-sudo ./install.sh --panel-bind 127.0.0.1   # 面板只允许本机访问
-sudo ./install.sh --dir /srv/qqbot         # 换安装目录
-sudo ./install.sh --from-source            # 跳过下载，强制在服务器上编译
+# 全程不询问
+curl -fsSL -o /tmp/qqbot-boot.sh https://raw.githubusercontent.com/caspian-vex/qqbot-dev/main/bootstrap.sh && sudo bash /tmp/qqbot-boot.sh --yes
+
+# 面板只允许本机访问
+sudo bash /tmp/qqbot-boot.sh --panel-bind 127.0.0.1
+
+# 换安装目录
+sudo bash /tmp/qqbot-boot.sh --dir /srv/qqbot
+
+# 跳过下载，强制在服务器上编译
+sudo bash /tmp/qqbot-boot.sh --from-source
 ```
+
+已经 clone 过之后，日常只要 `cd /root/qqbot-dev && sudo ./install.sh ...` 就行，
+不用再走 bootstrap。
 
 > 默认面板绑 `0.0.0.0`，装完直接访问 `http://<服务器IP>:5333`，不需要 SSH 隧道。
 > 想只允许本机就加 `--panel-bind 127.0.0.1`。
