@@ -47,6 +47,8 @@ func dispatch(args []string) error {
 		return cmdStatus(args)
 	case "doctor":
 		return cmdDoctor(args)
+	case "reset-password":
+		return cmdResetPassword(args)
 	case "help", "-h", "--help":
 		usage(os.Stdout)
 		return nil
@@ -63,11 +65,12 @@ func usage(w io.Writer) {
   qqbot <子命令> [参数]
 
 子命令:
-  run        前台运行机器人（容器入口）
-  status     查看运行状态
-  doctor     环境自检
-  version    打印版本
-  help       显示本帮助
+  run             前台运行机器人（容器入口）
+  status          查看运行状态
+  doctor          环境自检
+  reset-password  重置面板管理员密码（忘记密码时用）
+  version         打印版本
+  help            显示本帮助
 
 配置文件: %s
 数据目录: %s

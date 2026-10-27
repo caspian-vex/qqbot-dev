@@ -74,6 +74,7 @@ git clone <本仓库> qqbot-dev && cd qqbot-dev && sudo ./install.sh
 ```
 qqbot status                  容器与面板状态、资源占用
 qqbot url                     面板与 WebUI 的访问地址
+qqbot reset-password          重置面板密码（忘了密码时用，数据不动）
 qqbot logs -f                 跟踪日志（qqbot logs napcat 看协议端）
 qqbot restart                 重启
 qqbot upgrade [--src <目录>]  重建镜像并切过去，失败自动回滚

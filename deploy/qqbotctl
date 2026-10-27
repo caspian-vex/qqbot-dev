@@ -173,6 +173,15 @@ cmd_upgrade() {
   dc up -d
 
   if wait_ready 90; then
+    # 镜像换了，CLI 也要跟着换，否则新增的子命令（比如 reset-password）不会生效。
+    # 用 mv 原子替换而不是直接覆盖：当前脚本正被 bash 读取，
+    # 覆盖同一个文件可能让解释器读到半新半旧的内容。
+    if [ -f "$DIR/src/deploy/qqbotctl" ]; then
+      if install -m 755 "$DIR/src/deploy/qqbotctl" /usr/local/bin/.qqbot.new 2>/dev/null \
+         && mv -f /usr/local/bin/.qqbot.new /usr/local/bin/qqbot; then
+        echo "已更新 qqbot 命令"
+      fi
+    fi
     echo "升级成功（当前 qqbot:$new）"
     [ "$old" != "$new" ] && [ -n "$old" ] && {
       echo "旧镜像 qqbot:$old 仍保留，回滚：sudo qqbot rollback $old"
@@ -245,6 +254,33 @@ cmd_restore() {
   echo "已从 $src 恢复"
 }
 
+# 重置面板密码。
+#
+# 镜像里已经有 qqbot 二进制和 SQLite 驱动，所以用一次性容器直接改，
+# 既不需要宿主机装 sqlite3，也不用往运行中的容器里 exec。
+# 改之前先停掉 qqbot，否则两个进程同时写 SQLite 会有一致性问题。
+cmd_reset_password() {
+  local tag was_running=0 rc=0
+  tag=$(env_get QQBOT_VERSION)
+  [ -n "$tag" ] || tag="dev"
+
+  if [ "$(docker inspect -f '{{.State.Running}}' qqbot-core 2>/dev/null || echo false)" = "true" ]; then
+    was_running=1
+    dc stop qqbot >/dev/null
+  fi
+
+  # 容器内 data_dir 是 /opt/qqbot/data（见 qqbot.toml），数据库在它下面一层，
+  # 所以挂载点是 /opt/qqbot/data 而不是 /opt/qqbot/data/qqbot。
+  docker run --rm -v "$DIR/data/qqbot:/opt/qqbot/data" "qqbot:$tag" \
+    reset-password --db /opt/qqbot/data/qqbot.db "$@" || rc=$?
+
+  if [ "$was_running" = 1 ]; then
+    dc start qqbot >/dev/null
+    wait_ready 30 || true
+  fi
+  return "$rc"
+}
+
 # 打印访问地址。默认是公网 IP 直连，不需要隧道。
 cmd_url() {
   local ip
@@ -299,6 +335,7 @@ qqbot — 运维命令
 
   status                  容器与面板状态、资源占用
   url                     打印面板与 WebUI 的访问地址
+  reset-password          重置面板密码（默认同时关闭 TOTP，加 --keep-totp 保留）
   logs [-f] [服务]        查看日志（服务：qqbot / napcat）
   up / down               启动 / 停止
   restart                 重启
@@ -316,6 +353,7 @@ EOF
 case "${1:-}" in
   status)    shift; cmd_status "$@" ;;
   url)       shift; cmd_url "$@" ;;
+  reset-password) shift; cmd_reset_password "$@" ;;
   logs)      shift; cmd_logs "$@" ;;
   up)        shift; dc up -d ;;
   down)      shift; dc down ;;
