@@ -6,6 +6,7 @@
 #   sudo ./install.sh --yes                  不询问，全部用默认值
 #   sudo ./install.sh --panel-bind 127.0.0.1 面板只允许本机访问
 #   sudo ./install.sh --dir /srv/qqbot       换安装目录
+#   sudo ./install.sh --from-source          跳过下载，强制在服务器上构建
 #
 # 只做三件事：准备 Docker → 生成配置与密钥 → 构建并启动。
 # 装完直接访问 http://<服务器IP>:8080，不需要 SSH 隧道。
@@ -19,6 +20,8 @@ if [ -n "${PANEL_BIND:-}" ]; then
 fi
 PANEL_BIND="${PANEL_BIND:-0.0.0.0}"
 ASSUME_YES=0
+# 1 = 不下载预编译二进制，直接在服务器上构建
+FROM_SOURCE=0
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 while [ $# -gt 0 ]; do
@@ -26,10 +29,13 @@ while [ $# -gt 0 ]; do
     --yes|-y)      ASSUME_YES=1; shift ;;
     --dir)         DIR="$2"; shift 2 ;;
     --panel-bind)  PANEL_BIND="$2"; PANEL_BIND_SET=1; shift 2 ;;
-    -h|--help)     sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --from-source) FROM_SOURCE=1; shift ;;
+    -h|--help)     sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)             echo "未知参数: $1" >&2; exit 1 ;;
   esac
 done
+
+ENV_FILE="$DIR/etc/env"
 
 # ---------- 输出 ----------
 if [ -t 1 ]; then
@@ -103,6 +109,115 @@ public_ip() {
   done
   ip=$(hostname -I 2>/dev/null | awk '{print $1}')
   echo "${ip:-<服务器IP>}"
+}
+
+# ---------- 预编译二进制 ----------
+#
+# 为什么要有这一段：
+#   在 1 核 2G 的服务器上跑 go build，要拉 100MB 的 golang 镜像、下载全部依赖、
+#   再编译一个 12MB 的二进制，约 90 秒，期间内存接近上限。
+#   CI 已经把同样参数的产物编译好了（见 .github/workflows/release.yml），
+#   下载只要几秒。所以默认先下，下不到再回退到本地构建。
+#
+# 两个来源的产物等价：都是 CGO_ENABLED=0 的静态二进制，ldflags 也一致。
+# 用 QQBOT_BINARY_BASE 可以指向自建镜像站（GitHub 在部分网络下很慢）：
+#   sudo QQBOT_BINARY_BASE=https://mirror.example.com/qqbot ./install.sh
+RELEASE_BASE="${QQBOT_BINARY_BASE:-https://github.com/caspian-vex/qqbot-dev/releases/latest/download}"
+
+# 只留十六进制字符。
+# 为什么需要：Git Bash / MSYS 的 sha256sum 会在行首加一个 \ 做转义标记
+# （输出形如「\23d9a3…␣␣文件名」），直接取 $1 会拿到带反斜杠的串，
+# 于是明明一致的值被判成不一致，安装静默回退源码构建。
+# 在 Linux 上这个清洗是空操作，写在这里是为了两边行为一致。
+hex_of() { printf '%s' "$1" | tr -cd '0-9a-f'; }
+
+# sha256sum 在 coreutils 里，最小化 Debian 一般都有；没有就用 openssl 兜底
+sha256_of() {
+  local h
+  if command -v sha256sum >/dev/null 2>&1; then
+    h=$(sha256sum "$1" | awk '{print $1}')
+  elif command -v openssl >/dev/null 2>&1; then
+    h=$(openssl dgst -sha256 "$1" | awk '{print $NF}')
+  else
+    return 1
+  fi
+  h=$(hex_of "$h")
+  # 长度不对说明根本没拿到哈希，宁可回退源码构建也不要瞎比
+  [ ${#h} -eq 64 ] || return 1
+  printf '%s' "$h"
+}
+
+# 回退到源码构建。三条都要做：改 Dockerfile、删掉可能残留的旧二进制、改状态。
+# 不删旧二进制的话，它会一直躺在构建上下文里（12MB），下次又容易搞混。
+use_source() {
+  env_set "$ENV_FILE" QQBOT_DOCKERFILE  "Dockerfile"
+  env_set "$ENV_FILE" QQBOT_BUILD_MODE  "source"
+  rm -f "$DIR/src/qqbot.prebuilt"
+  ok "改用源码构建（首次约 2-5 分钟，要下 Go 镜像和依赖）"
+}
+
+fetch_binary() {
+  step "获取二进制"
+
+  if [ "$FROM_SOURCE" = 1 ]; then
+    ok "已指定 --from-source，跳过下载"
+    use_source
+    return 0
+  fi
+
+  local want got size
+  DL_TMP=$(mktemp -d)
+  # EXIT 而不是 RETURN：RETURN 陷阱在 bash 里没有 functrace 时语义含糊，
+  # 会在后续每个函数返回时重复触发。临时目录留到脚本结束再删也无所谓。
+  trap 'rm -rf "$DL_TMP"' EXIT
+
+  local asset="$RELEASE_BASE/qqbot-linux-$ARCH"
+  echo "${C_DIM}下载 $asset${C_END}"
+
+  if ! fetch "$asset" "$DL_TMP/qqbot"; then
+    warn "下载失败（网络不通，或这个版本还没发布预编译产物）"
+    use_source
+    return 0
+  fi
+
+  # 校验文件拿不到就不敢用：没有 sha256 就没法确认下载的东西没被替换
+  if ! fetch "$RELEASE_BASE/checksums.txt" "$DL_TMP/checksums.txt"; then
+    warn "校验文件 checksums.txt 下载失败"
+    use_source
+    return 0
+  fi
+
+  # sha256sum 在 Linux 上输出「hash␣␣文件名」，在 Windows/MSYS 上输出「hash␣*文件名」。
+  # 这里剥掉可能的 * 前缀，两种格式都能认。
+  want=$(hex_of "$(awk -v n="qqbot-linux-$ARCH" '
+    { name = $2; sub(/^\*/, "", name); if (name == n) { print $1; exit } }
+  ' "$DL_TMP/checksums.txt")")
+  if [ -z "$want" ]; then
+    warn "校验文件里没有 qqbot-linux-$ARCH 的记录"
+    use_source
+    return 0
+  fi
+
+  if ! got=$(sha256_of "$DL_TMP/qqbot"); then
+    warn "系统里既没有 sha256sum 也没有 openssl，无法校验"
+    use_source
+    return 0
+  fi
+
+  if [ "$got" != "$want" ]; then
+    warn "sha256 不匹配（期望 ${want:0:12}…，实际 ${got:0:12}…），丢弃"
+    warn "如果用了 QQBOT_BINARY_BASE，检查它指向的是不是本项目的产物"
+    use_source
+    return 0
+  fi
+
+  size=$(du -h "$DL_TMP/qqbot" | cut -f1)
+  # install 而不是 cp：一次性设定 0755，省掉单独的 chmod
+  install -m 755 "$DL_TMP/qqbot" "$DIR/src/qqbot.prebuilt"
+
+  env_set "$ENV_FILE" QQBOT_DOCKERFILE "Dockerfile.runtime"
+  env_set "$ENV_FILE" QQBOT_BUILD_MODE "prebuilt"
+  ok "预编译二进制已就位（$ARCH，$size，sha256 校验通过）"
 }
 
 # ---------- 预检 ----------
@@ -273,13 +388,20 @@ install_src() {
 
 # ---------- 构建与启动 ----------
 build_and_up() {
-  step "构建镜像"
-
   local env_file="$DIR/etc/env"
-  local mem_mb
-  mem_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
-  if [ "$mem_mb" -lt 2048 ]; then
-    warn "首次构建约 2-5 分钟（要下 Go 镜像和依赖），期间内存会接近上限，请勿中断"
+  local mode mem_mb
+  mode=$(env_get QQBOT_BUILD_MODE)
+  [ -n "$mode" ] || mode="source"
+
+  if [ "$mode" = "prebuilt" ]; then
+    step "组装镜像"
+    echo "${C_DIM}复用预编译二进制，只需拉一个 3MB 的 alpine 基础镜像，约 10-30 秒${C_END}"
+  else
+    step "构建镜像"
+    mem_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+    if [ "$mem_mb" -lt 2048 ]; then
+      warn "首次构建约 2-5 分钟（要下 Go 镜像和依赖），期间内存会接近上限，请勿中断"
+    fi
   fi
 
   cd "$DIR"
@@ -313,11 +435,17 @@ build_and_up() {
 # ---------- 收尾 ----------
 print_next() {
   local env_file="$DIR/etc/env"
-  local webui_token panel_bind pw ip
+  local webui_token panel_bind pw ip build_mode build_label
 
   webui_token=$(env_get WEBUI_TOKEN)
   panel_bind=$(env_get PANEL_BIND)
   [ -n "$panel_bind" ] || panel_bind="0.0.0.0"
+
+  build_mode=$(env_get QQBOT_BUILD_MODE)
+  case "$build_mode" in
+    prebuilt) build_label="预编译二进制（sha256 已校验）" ;;
+    *)        build_label="服务器本地构建（源码）" ;;
+  esac
 
   pw=$(cd "$DIR" && docker compose --env-file "$env_file" logs qqbot 2>/dev/null \
         | grep -A3 '面板初始凭据' | grep '密码' | head -1 | sed 's/.*: *//' || true)
@@ -345,6 +473,7 @@ print_next() {
 ${C_OK}========== 安装完成 ==========${C_END}
 
 安装目录     $DIR
+镜像来源     $build_label
 面板地址     $panel_url
 面板账号     admin / ${pw:-见 qqbot logs}
 NapCat WebUI $webui_url
@@ -373,6 +502,11 @@ ${C_WARN}安全提醒（面板现在公网可达）${C_END}
 - OneBot 的 3001 端口仍然只绑 127.0.0.1，这是刻意保留的：
   它默认没有 Token，一旦暴露公网，任何人连上来就能冒充你的机器人发消息。
 
+${C_DIM}以后升级${C_END}
+   cd <你 clone 下来的源码目录> && git pull && sudo ./install.sh --yes
+   重跑安装脚本会重新同步源码、重新下载最新预编译二进制；密钥与数据都不受影响。
+   想强制在服务器上编译（比如要跑未发布的改动）：加 --from-source
+
 ${C_DIM}常用命令（已安装到 /usr/local/bin/qqbot）${C_END}
    qqbot status      容器与面板状态、资源占用
    qqbot logs -f     跟踪日志
@@ -397,6 +531,7 @@ main() {
   ensure_docker
   gen_config
   install_src
+  fetch_binary
   build_and_up
   install_cli
   print_next

@@ -4,7 +4,8 @@
 #   - 两个容器总内存上限 1.25G，给系统和 1Panel 留出余量
 #   - 日志用服务级轮转，**不改 /etc/docker/daemon.json**
 #     （daemon.json 是全局的，1Panel 会重写；服务级配置零冲突）
-#   - 所有端口只绑 127.0.0.1，公网入口由使用者自己反代
+#   - 面板 8080 与 NapCat WebUI 6099 默认绑 0.0.0.0，直接 http://<IP>:端口 访问；
+#     OneBot 3001 写死 127.0.0.1，绝不对公网开放
 #
 # 用法：docker compose --env-file .env up -d
 
@@ -64,6 +65,11 @@ services:
     build:
       # 安装目录布局：compose.yaml 在根，源码在 src/
       context: ./src
+      # 用哪个 Dockerfile 由 install.sh 写进 etc/env：
+      #   Dockerfile.runtime  已经下载到官方预编译二进制，只组装镜像，约 3 秒
+      #   Dockerfile          没下载到，在服务器上跑完整 Go 构建，约 90 秒
+      # 两者产出的镜像内容等价，切换只影响构建耗时。
+      dockerfile: ${QQBOT_DOCKERFILE:-Dockerfile}
       args:
         VERSION: ${QQBOT_VERSION:-dev}
         COMMIT: ${QQBOT_COMMIT:-none}

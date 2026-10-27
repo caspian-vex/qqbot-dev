@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1
+#
+# qqbot 运行镜像（预编译版）。
+#
+# 与 Dockerfile 的产物完全一致，区别只在「二进制从哪来」：
+#   Dockerfile          在容器里跑 go build（服务器上要装 Go 工具链，1 核约 90 秒）
+#   Dockerfile.runtime  直接 COPY 一个已经编译好的静态二进制（约 3 秒）
+#
+# 用哪个由 install.sh 决定：下载到官方预编译二进制就写 QQBOT_DOCKERFILE=Dockerfile.runtime，
+# 下载不到就写 QQBOT_DOCKERFILE=Dockerfile 回退源码构建。见 deploy/compose.yaml。
+#
+# 前提：qqbot.prebuilt 必须是 CGO_ENABLED=0 的静态链接二进制。
+# 下面这个 base 是 alpine（musl），动态链接的 glibc 二进制进去会直接 not found。
+
+# ---------- 运行段 ----------
+FROM alpine:3.21
+
+# ca-certificates：调 DeepSeek HTTPS 必需（alpine 默认不带，缺了会报 x509 错误）
+# tzdata：日志与人格变量里的时间要按本地时区显示
+RUN apk add --no-cache ca-certificates tzdata \
+ && adduser -D -u 10001 -h /opt/qqbot -s /sbin/nologin qqbot \
+ && mkdir -p /opt/qqbot/data /opt/qqbot/etc \
+ && chown -R 10001:10001 /opt/qqbot
+
+# install.sh 把下载并校验过 sha256 的二进制放在构建上下文根目录。
+# 声明这几个 ARG 只为写进 LABEL：不然 compose 传过来会被 BuildKit 报
+# 「not consumed」警告，而这几项本身对排查版本问题很有用。
+ARG VERSION=dev
+ARG COMMIT=none
+ARG BUILD_DATE=unknown
+LABEL org.opencontainers.image.title="qqbot" \
+      org.opencontainers.image.version="$VERSION" \
+      org.opencontainers.image.revision="$COMMIT" \
+      org.opencontainers.image.created="$BUILD_DATE"
+
+COPY qqbot.prebuilt /usr/local/bin/qqbot
+RUN chmod 755 /usr/local/bin/qqbot
+
+ENV TZ=Asia/Shanghai \
+    QQBOT_ROOT=/opt/qqbot
+
+WORKDIR /opt/qqbot
+USER qqbot
+
+EXPOSE 8080
+
+# 容器只跑前台，生命周期交给 compose 管；
+# 健康检查在 compose.yaml 里（用 busybox 自带的 wget）。
+ENTRYPOINT ["/usr/local/bin/qqbot"]
+CMD ["run"]

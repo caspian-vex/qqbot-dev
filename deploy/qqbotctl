@@ -107,6 +107,13 @@ cmd_status() {
     echo "不可达（可能仍在启动，或容器已退出）—— 看 qqbot logs"
   fi
   echo
+  echo "=== 版本 ==="
+  echo "镜像  qqbot:$(env_get QQBOT_VERSION)"
+  case "$(env_get QQBOT_BUILD_MODE)" in
+    prebuilt) echo "来源  预编译二进制（安装时下载，sha256 已校验）" ;;
+    *)        echo "来源  服务器本地构建" ;;
+  esac
+  echo
   echo "=== 资源占用 ==="
   docker stats --no-stream --format \
     'table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}' \
@@ -162,6 +169,17 @@ cmd_upgrade() {
   env_set QQBOT_VERSION "$new"
   env_set QQBOT_COMMIT "$(git -C "${src:-$DIR/src}" rev-parse --short HEAD 2>/dev/null || echo none)"
   env_set QQBOT_BUILD_DATE "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  # 升级一律走源码构建，不复用安装时下载的预编译二进制。
+  # 原因：那个二进制对应的是旧版本，拿旧二进制配新源码里的前端资源，
+  # 会出现「面板显示旧版、日志报新版本」这种版本错位，很难排查。
+  # 想要预编译的快速路径：git pull 之后重跑 install.sh。
+  if [ "$(env_get QQBOT_BUILD_MODE)" = "prebuilt" ]; then
+    echo "本次升级改用源码构建（预编译产物与这份源码不保证同版本）"
+  fi
+  env_set QQBOT_BUILD_MODE "source"
+  env_set QQBOT_DOCKERFILE "Dockerfile"
+  rm -f "$DIR/src/qqbot.prebuilt"
 
   echo "构建…"
   if ! dc build; then
@@ -339,7 +357,7 @@ qqbot — 运维命令
   logs [-f] [服务]        查看日志（服务：qqbot / napcat）
   up / down               启动 / 停止
   restart                 重启
-  upgrade [--src <目录>]  重建镜像并切过去，失败自动回滚
+  upgrade [--src <目录>]  重建镜像并切过去，失败自动回滚（走源码构建，约 2 分钟）
   rollback <版本>         回滚到指定镜像版本
   backup                  备份数据与密钥（先停容器，保证一致性）
   restore <文件>          从备份恢复

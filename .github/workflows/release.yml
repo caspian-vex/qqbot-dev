@@ -1,0 +1,128 @@
+name: release
+
+# 只做一件事：把 linux/amd64 与 linux/arm64 的静态二进制编译出来挂到 Release 上。
+#
+# 为什么需要这个：
+#   服务器是 1 核 2G，在上面跑 `go build` 要 1 分半，还要拉 100MB+ 的 golang 镜像，
+#   期间内存接近上限。install.sh 因此优先下载这里产出的二进制（12MB，几秒），
+#   只有下载不到时才回退到服务器本地构建。
+#
+# 触发：
+#   push 一个 v* 标签  → 构建并发布 Release
+#   手动 workflow_dispatch → 可指定标签；留空则只构建产物不发布
+#
+# 产物命名必须与 install.sh / Makefile 严格一致，改一处就要改三处：
+#   qqbot-linux-amd64
+#   qqbot-linux-arm64
+#   checksums.txt
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "发布标签（如 v0.1.0）。留空则只构建产物，不发布。"
+        required: false
+        default: ""
+
+# gh release create 需要写权限；其余步骤只读
+permissions:
+  contents: write
+
+# 同一个标签重复触发时，后到的覆盖先到的，避免两个 job 抢着上传
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 构建并发布
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出
+        uses: actions/checkout@v4
+        with:
+          # make release 用 git describe --tags 生成版本号，
+          # 浅克隆拿不到标签，版本号会退化成 dev
+          fetch-depth: 0
+
+      - name: 安装 Go
+        uses: actions/setup-go@v5
+        with:
+          # 以 go.mod 为准，不在 workflow 里硬编码版本：
+          # 升级 Go 只改 go.mod，这里自动跟随
+          go-version-file: go.mod
+          cache: true
+
+      - name: 计算版本
+        id: meta
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+            [ -n "$tag" ] || tag=$(git describe --tags --always)
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "版本号 $tag"
+
+      # 先跑测试再发版：宁可不出产物，也不要发一个跑不起来的二进制
+      - name: 测试
+        run: go test ./...
+
+      - name: 交叉编译
+        run: make release VERSION="${{ steps.meta.outputs.tag }}"
+
+      # 产物一旦有问题，用户那边是「下载成功但启动就崩」，
+      # 比下载失败更难排查。所以在发布前把三件事验掉。
+      - name: 校验产物
+        run: |
+          set -euo pipefail
+          for arch in amd64 arm64; do
+            f="dist/qqbot-linux-$arch"
+            test -s "$f" || { echo "缺少产物 $f"; exit 1; }
+            desc=$(file -b "$f")
+            echo "$f: $desc"
+            # alpine 运行镜像没有 glibc，动态链接的二进制进去会报 not found，
+            # 所以这里必须确认是静态链接
+            case "$desc" in
+              *"statically linked"*) ;;
+              *) echo "$f 不是静态链接，alpine 里跑不起来"; exit 1 ;;
+            esac
+            case "$arch:$desc" in
+              amd64:*x86-64*) ;;
+              arm64:*aarch64*) ;;
+              *) echo "$f 架构不对"; exit 1 ;;
+            esac
+          done
+
+          # amd64 可以在 runner 上直接跑，验证二进制真的能启动
+          ./dist/qqbot-linux-amd64 version
+
+          # 校验文件必须覆盖两个架构，否则 install.sh 会认为「没有本架构的记录」而回退源码构建
+          grep -q 'qqbot-linux-amd64' dist/checksums.txt
+          grep -q 'qqbot-linux-arm64' dist/checksums.txt
+          cat dist/checksums.txt
+
+      - name: 发布
+        # 标签触发的才发布；手动触发且没填标签时只留构建产物在日志里
+        if: github.event_name == 'push' || inputs.tag != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.meta.outputs.tag }}"
+          files="dist/qqbot-linux-amd64 dist/qqbot-linux-arm64 dist/checksums.txt"
+
+          # 允许重跑：标签已存在就覆盖上传，不报错
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag 已存在，覆盖上传"
+            gh release upload "$tag" $files --clobber
+          else
+            gh release create "$tag" $files \
+              --title "$tag" \
+              --generate-notes
+          fi
+          echo "已发布 https://github.com/${{ github.repository }}/releases/tag/$tag"

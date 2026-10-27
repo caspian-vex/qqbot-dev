@@ -37,14 +37,28 @@ git clone <本仓库> qqbot-dev && cd qqbot-dev && sudo ./install.sh
 1. 检查架构、内存、磁盘、swap
 2. 检查 Docker，没有就问你要不要装
 3. 生成密钥（`etc/env`，0600）与引导配置
-4. 构建镜像、启动容器、等面板健康
-5. 把 `qqbot` 运维命令装到 `/usr/local/bin`
+4. **下载官方预编译二进制并校验 sha256**；下不到就回退到服务器本地构建
+5. 组装镜像、启动容器、等面板健康
+6. 把 `qqbot` 运维命令装到 `/usr/local/bin`
 
 装完会打印面板地址、初始密码、NapCat WebUI Token，以及下一步要做什么。
+
+首次安装约 **3.5 分钟**，绝大部分时间花在拉 NapCat 镜像（2.16G）上。
+第 4 步是刻意设计的：1 核 2G 上跑 `go build` 要 90 秒且内存接近上限，
+而 CI 已经用同样的参数把二进制编好了，下载只要几秒。
+两条路径的产物等价，装完会打印 `镜像来源` 告诉你是哪条。
 
 **非交互安装**：`sudo ./install.sh --yes`
 
 **只允许本机访问**：`sudo ./install.sh --panel-bind 127.0.0.1`
+
+**强制在服务器上编译**：`sudo ./install.sh --from-source`
+
+**下载慢 / 下不动**（GitHub 在国内不稳定）：把下载地址指向镜像站
+
+```bash
+sudo QQBOT_BINARY_BASE=https://mirror.example.com/qqbot ./install.sh
+```
 
 ### 装完之后必须做的两件事
 

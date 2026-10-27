@@ -9,6 +9,8 @@
 
 .git
 .gitignore
+.gitattributes
+.github
 .devroot
 
 /bin
